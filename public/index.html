@@ -657,6 +657,7 @@ body::after {
 
     <div class="lobby-error" id="lobby-error"></div>
     <button class="lobby-btn" id="join-btn">JOIN GAME</button>
+    <button class="lobby-btn" id="add-bots-btn" style="display: none; background: linear-gradient(135deg, #2ecc71, #27ae60); margin-top: 10px;">FILL WITH BOTS & START</button>
 
     <div class="lobby-players-waiting">
       <h4>Waiting for players</h4>
@@ -774,6 +775,7 @@ const resultsScreen = document.getElementById("results-screen");
 const abortScreen   = document.getElementById("abort-screen");
 const nameInput     = document.getElementById("name-input");
 const joinBtn       = document.getElementById("join-btn");
+const addBotsBtn    = document.getElementById("add-bots-btn");
 const lobbyError    = document.getElementById("lobby-error");
 const playerCount   = document.getElementById("player-count");
 const waitingList   = document.getElementById("waiting-list");
@@ -918,6 +920,12 @@ socket.on("lobbyState", ({ count, players: ps }) => {
 socket.on("lobbyUpdate", ({ count, players: ps }) => {
   playerCount.textContent = count;
   rebuildWaitingList(ps);
+  
+  if (myIndex !== -1 && count > 0 && count < 4) {
+    addBotsBtn.style.display = "block";
+  } else {
+    addBotsBtn.style.display = "none";
+  }
 });
 
 function rebuildWaitingList(ps) {
@@ -1091,6 +1099,7 @@ socket.on("returnToLobby", () => {
 
   joinBtn.disabled = false;
   nameInput.disabled = false;
+  addBotsBtn.style.display = "none";
   myIndex = -1;
   myHand = [];
   allPlayers = [];
@@ -1147,6 +1156,12 @@ joinBtn.addEventListener("click", () => {
   socket.emit("joinLobby", { name, color: myColor });
 });
 nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") joinBtn.click(); });
+
+/* ── Add Bots Button ────────────────────────────────────────────────── */
+addBotsBtn.addEventListener("click", () => {
+  socket.emit("startWithBots");
+  addBotsBtn.style.display = "none";
+});
 
 /* ── Init toast ────────────────────────────────────────────────────── */
 setToast("Connecting to server…", 2000);

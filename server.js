@@ -73,6 +73,16 @@ function startGame() {
     currentTurnIndex: 0,
     starterIndex: 0,
   });
+
+  players.forEach(p => {
+    if (p.isBot && checkWin(p)) {
+      setTimeout(() => triggerBotClaim(p.id), 1500);
+    }
+  });
+
+  if (players[currentTurnIndex].isBot) {
+      triggerBotTurn();
+  }
 }
 
 function broadcastHandSizes() {
@@ -85,6 +95,118 @@ function checkWin(player) {
     return true;
   }
   return false;
+}
+
+function triggerBotTurn() {
+  if (!gameActive || claimMade) return;
+  const botIndex = currentTurnIndex;
+  const bot = players[botIndex];
+  if (!bot || !bot.isBot) return;
+
+  const delay = Math.floor(Math.random() * 1000) + 1500;
+  setTimeout(() => {
+    if (!gameActive || claimMade || currentTurnIndex !== botIndex) return;
+
+    const requiredHandSize = botIndex === 0 ? 4 : 5;
+    if (bot.hand.length !== requiredHandSize) return;
+
+    const counts = {};
+    bot.hand.forEach(c => { counts[c] = (counts[c] || 0) + 1; });
+    let cardToPass = bot.hand[0];
+    let minFreq = 5;
+    bot.hand.forEach(c => {
+      if (counts[c] < minFreq) {
+        minFreq = counts[c];
+        cardToPass = c;
+      }
+    });
+
+    executePass(botIndex, cardToPass);
+  }, delay);
+}
+
+function triggerBotClaim(botId) {
+  if (!gameActive || claimMade) return;
+  const winner = players.find(p => p.id === botId);
+  if (!winner || !checkWin(winner)) return;
+
+  claimMade = true;
+  gameActive = false;
+  clickOrder = [botId];
+
+  console.log(`[★] Claim by bot ${winner.name}`);
+
+  io.emit("reactionPhase", {
+    winnerId: botId,
+    winnerName: winner.name,
+    winnerIndex: players.findIndex((p) => p.id === botId),
+  });
+
+  triggerBotReactions();
+}
+
+function triggerBotReactions() {
+  players.forEach(p => {
+    if (p.isBot && !clickOrder.includes(p.id)) {
+      const delay = Math.floor(Math.random() * 2500) + 500;
+      setTimeout(() => {
+        if (!claimMade || clickOrder.includes(p.id)) return;
+        clickOrder.push(p.id);
+        io.emit("touchUpdate", { clickOrder: [...clickOrder] });
+        if (clickOrder.length === 4 && !roundResultsSent) {
+          roundResultsSent = true;
+          sendRoundResults();
+        }
+      }, delay);
+    }
+  });
+}
+
+function executePass(senderIndex, card) {
+  if (!gameActive || claimMade) return;
+  const sender = players[senderIndex];
+  if (senderIndex !== currentTurnIndex) return;
+
+  const requiredHandSize = senderIndex === 0 ? 4 : 5;
+  if (sender.hand.length !== requiredHandSize) return;
+
+  const cardIdx = sender.hand.indexOf(card);
+  if (cardIdx === -1) return;
+
+  sender.hand.splice(cardIdx, 1);
+  const nextIndex = (senderIndex + 1) % 4;
+  const receiver = players[nextIndex];
+  receiver.hand.push(card);
+
+  currentTurnIndex = nextIndex;
+  const loopCompleted = senderIndex === 3 && nextIndex === 0;
+
+  io.emit("cardPassed", {
+    from: sender.id,
+    to: receiver.id,
+    fromIndex: senderIndex,
+    toIndex: nextIndex,
+    card,
+    newCurrentTurnIndex: nextIndex,
+    loopCompleted,
+  });
+
+  players.forEach((p) => {
+    if (!p.isBot) io.to(p.id).emit("handUpdate", { hand: p.hand });
+  });
+
+  broadcastHandSizes();
+
+  if (checkWin(receiver)) {
+    console.log(`[★] ${receiver.name} wins!`);
+    if (receiver.isBot) {
+       setTimeout(() => triggerBotClaim(receiver.id), 1500);
+    }
+  }
+
+  if (players[currentTurnIndex].isBot) {
+     triggerBotTurn();
+  }
 }
 
 // ─── Socket Events ─────────────────────────────────────────────────────────────
@@ -127,6 +249,35 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ── startWithBots ────────────────────────────────────────────────────────
+  socket.on("startWithBots", () => {
+    if (players.length >= 4 || gameActive) return;
+    
+    const botNames = ["RoboChitti", "Sir Bot-a-Lot", "ByteMaster", "Bot Alpha", "CardShark AI"];
+    const botColors = ["#7f8c8d", "#95a5a6", "#bdc3c7", "#34495e"];
+    
+    while (players.length < 4) {
+      const bName = botNames[players.length] || `Bot ${players.length}`;
+      const bColor = botColors[players.length % botColors.length];
+      players.push({
+        id: `bot-${players.length}`,
+        name: bName,
+        color: bColor,
+        isBot: true,
+        hand: []
+      });
+    }
+    
+    io.emit("lobbyUpdate", {
+      count: players.length,
+      players: players.map((p) => ({ name: p.name, color: p.color })),
+    });
+
+    if (players.length === 4) {
+      setTimeout(startGame, 800);
+    }
+  });
+
   // ── passToNext ─────────────────────────────────────────────────────────────
   socket.on("passToNext", ({ card }) => {
     if (!gameActive || claimMade) return;
@@ -138,63 +289,19 @@ io.on("connection", (socket) => {
     }
 
     const sender = players[senderIndex];
-
-    // ── Hand-size rule ────────────────────────────────────────────────────
-    // Player 1 (index 0) ALWAYS passes with 4 cards — they start each loop
-    // with 4, pass one (→ 3), then receive one from Player 4 (→ 4) each cycle.
-    // Players 2-4 always receive first (→ 5) then pass one (→ 4).
-    // So the required hand size to pass is purely seat-based:
     const requiredHandSize = senderIndex === 0 ? 4 : 5;
     if (sender.hand.length !== requiredHandSize) {
       socket.emit("passError", `Must have ${requiredHandSize} cards to pass.`);
       return;
     }
 
-    // Validate the card exists in sender's hand
     const cardIdx = sender.hand.indexOf(card);
     if (cardIdx === -1) {
       socket.emit("passError", "Card not in hand.");
       return;
     }
 
-    // Remove card from sender
-    sender.hand.splice(cardIdx, 1);
-
-    // Give card to next player
-    const nextIndex = (senderIndex + 1) % 4;
-    const receiver = players[nextIndex];
-    receiver.hand.push(card);
-
-    // Advance turn
-    currentTurnIndex = nextIndex;
-
-    // Detect loop completion: Player 4 just passed to Player 1.
-    // Player 1 is now back to 4 cards — notify the client so it can
-    // re-enable the 4-card pass for the next loop iteration.
-    const loopCompleted = senderIndex === 3 && nextIndex === 0;
-
-    // Emit the pass event
-    io.emit("cardPassed", {
-      from: socket.id,
-      to: receiver.id,
-      fromIndex: senderIndex,
-      toIndex: nextIndex,
-      card,
-      newCurrentTurnIndex: nextIndex,
-      loopCompleted,          // ← frontend uses this to reset its own flag
-    });
-
-    // Send each player their updated hand privately
-    players.forEach((p) => {
-      io.to(p.id).emit("handUpdate", { hand: p.hand });
-    });
-
-    broadcastHandSizes();
-
-    // Check win for receiver
-    if (checkWin(receiver)) {
-      console.log(`[★] ${receiver.name} wins!`);
-    }
+    executePass(senderIndex, card);
   });
 
   // ── claim ──────────────────────────────────────────────────────────────────
@@ -221,6 +328,8 @@ io.on("connection", (socket) => {
       winnerName: winner.name,
       winnerIndex: players.findIndex((p) => p.id === socket.id),
     });
+
+    triggerBotReactions();
   });
 
   // ── touch ──────────────────────────────────────────────────────────────────
