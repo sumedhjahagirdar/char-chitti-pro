@@ -946,6 +946,11 @@ socket.on("joinedLobby", ({ playerIndex }) => {
   joinBtn.disabled = true;
   nameInput.disabled = true;
   setToast(`Joined as Player ${myIndex + 1}`, 3000);
+  
+  const count = parseInt(playerCount.textContent) || 1;
+  if (count > 0 && count < 4) {
+    addBotsBtn.style.display = "block";
+  }
 });
 
 socket.on("joinError", (msg) => {
